@@ -1,0 +1,172 @@
+version: '3.5'
+
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.2.1
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    networks:
+      - kafka
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka-1:
+    image: confluentinc/cp-kafka:7.2.1
+    hostname: kafka-1
+    container_name: kafka-1
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9997:9997"
+    networks:
+      - kafka
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9997
+      KAFKA_JMX_HOSTNAME: kafka-1
+
+  kafka-2:
+    image: confluentinc/cp-kafka:7.2.1
+    hostname: kafka-2
+    container_name: kafka-2
+    depends_on:
+      - zookeeper
+    ports:
+      - "9093:9093"
+      - "9998:9998"
+    networks:
+      - kafka
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:29093,PLAINTEXT_HOST://localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9998
+      KAFKA_JMX_HOSTNAME: kafka-2
+
+  kafka-init-topics:
+    image: confluentinc/cp-kafka:7.2.1.arm64
+    hostname: kafka-init-topic
+    container_name: kafka-init-topic
+    depends_on:
+      - kafka-1
+      - kafka-2
+    networks:
+      - kafka
+    command: "bash -c 'echo Waiting for Kafka to be ready... && \
+               cub kafka-ready -b kafka-1:29092 1 30 && \
+               kafka-topics --create --topic users --partitions 3 --replication-factor 2 --if-not-exists --bootstrap-server kafka-1:29092 && \
+               kafka-topics --create --topic messages --partitions 2 --replication-factor 2 --if-not-exists --bootstrap-server kafka-1:29092 '"
+
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "9020:8080"
+    networks:
+      - kafka
+    environment:
+      AUTH_TYPE: DISABLED
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:29092,kafka-2:29093
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka-1
+      - kafka-2
+
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:4.1.0
+    hostname: kafka-connect
+    ports:
+      - "8083:8083"
+    networks:
+      - kafka      
+    environment:
+      # Required.
+      # The list of Kafka brokers to connect to. This is only used for bootstrapping,
+      # the addresses provided here are used to initially connect to the cluster,
+      # after which the cluster can dynamically change. Thanks, ZooKeeper!
+      CONNECT_BOOTSTRAP_SERVERS: "kafka-1:29092,kafka-2:29093"
+      # Required. A unique string that identifies the Connect cluster group this worker belongs to.
+      CONNECT_GROUP_ID: compose-connect-group
+      # Connect will actually use Kafka topics as a datastore for configuration and other data. #meta
+      # Required. The name of the topic where connector and task configuration data are stored.
+      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+      # Required. The name of the topic where connector and task configuration offsets are stored.
+      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+      # Required. The name of the topic where connector and task configuration status updates are stored.
+      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+      # Required. Converter class for key Connect data. This controls the format of the
+      # data that will be written to Kafka for source connectors or read from Kafka for sink connectors.
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      # Allows connect to leverage the power of schema registry. Here we define it for key schemas.
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      # Required. Converter class for value Connect data. This controls the format of the
+      # data that will be written to Kafka for source connectors or read from Kafka for sink connectors.
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      # Allows connect to leverage the power of schema registry. Here we define it for value schemas.
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      # Required. Converter class for internal key Connect data that implements the Converter interface.
+      CONNECT_INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      # Required. Converter class for offset value Connect data that implements the Converter interface.
+      CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      # Required. The hostname that will be given out to other workers to connect to.
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      # The next three are required when running in a single-node cluster, as we are.
+      # We would be able to take the default (of 3) if we had three or more nodes in the cluster.
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+    # kafka-connect relies upon Kafka and ZooKeeper.
+    # This will instruct docker to wait until those services are up
+    # before attempting to start kafka-connect.
+    depends_on:
+      - zookeeper
+      - kafka-1
+      - kafka-2
+
+  # This is a web tool for Kafka Connect for setting up and managing connectors for multiple connect clusters.
+  # https://github.com/Landoop/kafka-connect-ui
+  kafka-connect-ui:
+    image: landoop/kafka-connect-ui:0.9.4
+    hostname: kafka-connect-ui
+    # kafka-connect-ui binds to port 8000, but we are going to expose it on our local
+    # machine on port 8002.
+    ports:
+      - "8002:8000"
+    networks:
+      - kafka      
+    environment:
+      # Required. Instructs the UI where it can find Kafka Connect.
+      CONNECT_URL: "http://kafka-connect:8083/"
+      # This instructs the docker image to use Caddy to proxy traffic to kafka-connect-ui.
+      PROXY: "true"
+    # kafka-connect-ui relies upon Kafka Connect.
+    # This will instruct docker to wait until those services are up
+    # before attempting to start kafka-connect-ui.
+    depends_on:
+      - kafka-connect      
+
+networks:
+  kafka:
+    name: kafka
